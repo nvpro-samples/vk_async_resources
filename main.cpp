@@ -57,7 +57,6 @@
 
 #include "common.h"
 
-
 /*
   # vk_async_resources
 
@@ -666,7 +665,7 @@ public:
     m_frame++;
   }
 
-  void Sample::processUI(int width, int height, double time)
+  void processUI(int width, int height, double time)
   {
     // Update imgui configuration
     auto& imgui_io       = ImGui::GetIO();
@@ -712,6 +711,8 @@ public:
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <vulkan/vulkan_win32.h>
+#elif defined LINUX
+#include <GLFW/glfw3.h>
 #endif
 
 class SampleWindow : public NVPWindow
@@ -739,7 +740,7 @@ public:
     m_device   = context.m_device;
 
     // open window
-    if(!open(16, 16, width, height, PROJECT_NAME))
+    if(!open(16, 16, width, height, PROJECT_NAME, false))
     {
       return false;
     }
@@ -756,13 +757,8 @@ public:
       createInfo.hinstance                   = hInstance;
       createInfo.hwnd                        = hWnd;
       result                                 = vkCreateWin32SurfaceKHR(m_instance, &createInfo, nullptr, &m_surface);
-#else   // _WIN32
-      VkXcbSurfaceCreateInfoKHR createInfo = {};
-      createInfo.sType                     = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
-      createInfo.pNext                     = NULL;
-      createInfo.connection                = info.connection;
-      createInfo.window                    = info.window;
-      result                               = vkCreateXcbSurfaceKHR(m_instance, &createInfo, nullptr, &m_surface);
+#else  // _WIN32
+      result = glfwCreateWindowSurface(m_instance, m_internal, NULL, &m_surface);
 #endif  // _WIN32
       assert(result == VK_SUCCESS);
 
@@ -855,6 +851,7 @@ int main(int argc, const char** argv)
 #ifdef _WIN32
     contextInfo.addInstanceExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME, false);
 #else
+    contextInfo.addInstanceExtension(VK_KHR_XLIB_SURFACE_EXTENSION_NAME, false);
     contextInfo.addInstanceExtension(VK_KHR_XCB_SURFACE_EXTENSION_NAME, false);
 #endif
     contextInfo.addDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME, false);
