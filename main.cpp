@@ -293,7 +293,7 @@ public:
       vkCreateFence(m_device, &fenceInfo, nullptr, &job.fence);
 
       // keep record in which frame we got triggered
-      job.frameSignal = m_frame;
+      job.frameSignal = m_ringFences.getCurrentFrame();
 
       // get command buffer for staging operations
       job.cmd = m_test.transferCmdPool.createAndBegin();
@@ -535,10 +535,10 @@ public:
       vkDestroyFence(m_device, job.fence, nullptr);
       job.fence = VK_NULL_HANDLE;
     }
-    // wait a few frames until we know that the frame waiting for the semaphore
+    // wait if the frame that was waiting for the transfer
     // has completed (the fence here only tells us the copy operation has completed,
     // not whether the queue waiting for this copy had progressed)
-    if(job.semaphore && m_frame > job.frameSignal + nvvk::MAX_RING_FRAMES)
+    if(job.semaphore && m_ringFences.hasFrameCompleted(job.frameSignal))
     {
       vkDestroySemaphore(m_device, job.semaphore, nullptr);
       job.semaphore = VK_NULL_HANDLE;
@@ -582,7 +582,7 @@ public:
     // if the host is much faster at processing frames than the device.
 
     m_ringFences.wait();
-    m_ringCmdPool.setCycle(m_ringFences.getCycleIndex());
+    m_ringCmdPool.setFrame(m_ringFences.getCurrentFrame(), m_ringFences.getCompletedFrame());
 
     // Pick up a new command buffer every frame and
     // record our principle operations
@@ -625,7 +625,7 @@ public:
     }
 
     m_submission.enqueue(cmd);
-    m_submission.execute(m_ringFences.advanceCycle());
+    m_submission.execute(m_ringFences.advanceFrame());
     m_profilerVK.endFrame();
 
     if(m_test.useAsync)
