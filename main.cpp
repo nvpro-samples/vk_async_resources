@@ -88,7 +88,7 @@ public:
 
   nvvk::BatchSubmission m_submission;
   nvvk::RingFences      m_ringFences;
-  nvvk::RingCmdPool     m_ringCmdPool;
+  nvvk::RingCommandPool m_ringCmdPool;
 
   nvvk::DeviceMemoryAllocator m_memAllocator;
 
@@ -97,16 +97,15 @@ public:
   // vary
   FrameBuffer m_frameBuffer;
 
-  uint64_t m_frame  = 0;
+  uint32_t m_frame  = 0;
   double   m_uiTime = 0;
 
   // -- Test ---------------------------------------------------------
 
   struct AsyncTransferJob
   {
-    nvvk::StagingID              stagingID;
     VkCommandBuffer              cmd         = VK_NULL_HANDLE;
-    uint64_t                     frameSignal = 0;
+    uint32_t                     frameSignal = 0;
     VkSemaphore                  semaphore   = VK_NULL_HANDLE;
     VkFence                      fence       = VK_NULL_HANDLE;
     bool                         print       = true;
@@ -117,21 +116,21 @@ public:
   {
     VkPipeline                   pipeline = VK_NULL_HANDLE;
     nvvk::DescriptorSetContainer container;
+    nvvk::ShaderModuleID         moduleVS;
+    nvvk::ShaderModuleID         moduleFS;
 
     nvvk::BufferDma viewUbo;
     nvvk::BufferDma geoVbo;
     nvvk::BufferDma geoIbo;
 
-    nvvk::AllocatorDma            allocatorDma;
-    nvvk::StagingMemoryManagerDma staging;
+    nvvk::AllocatorDma allocatorDma;
 
     std::vector<VkDrawIndexedIndirectCommand> drawCmds;
 
-    AsyncTransferJob transfer;
-    nvvk::CmdPool    transferCmdPool;
-
-    nvvk::ShaderModuleID moduleVS;
-    nvvk::ShaderModuleID moduleFS;
+    AsyncTransferJob  transfer;
+    nvvk::CommandPool transferCmdPool;
+    VkFence           transferFence;
+    VkSemaphore       transferSemaphore;
 
     // ui/tweakable
     bool useAsync        = true;
@@ -196,7 +195,7 @@ public:
     m_ringCmdPool.deinit();
 
     // Delete all accumulated shader modules
-    m_shaderManager.deleteShaderModules();
+    m_shaderManager.deinit();
 
     m_profilerVK.deinit();
   }
@@ -206,16 +205,21 @@ public:
   bool initTest()
   {
     // internal subsystems
-    // staging memory manager
-    m_test.staging.init(m_memAllocator, 16 * 1024 * 1024);
-    // in this particular sample we want to keep staging memory around,
-    // as we keep re-using it
-    m_test.staging.setFreeUnusedOnRelease(false);
 
     // simplified allocator wrapper
-    m_test.allocatorDma.init(m_device, m_memAllocator, m_test.staging);
+    m_test.allocatorDma.init(m_device, m_physicalDevice, &m_memAllocator, 16 * 1024 * 1024);
+    // in this particular sample we want to keep staging memory around,
+    // as we keep re-using it
+    m_test.allocatorDma.getStaging()->setFreeUnusedOnRelease(false);
+
     // command pool for async transfers
     m_test.transferCmdPool.init(m_device, m_queueTransferFamily);
+
+    VkSemaphoreCreateInfo semInfo = nvvk::make<VkSemaphoreCreateInfo>();
+    vkCreateSemaphore(m_device, &semInfo, nullptr, &m_test.transferSemaphore);
+
+    VkFenceCreateInfo fenceInfo = nvvk::make<VkFenceCreateInfo>();
+    vkCreateFence(m_device, &fenceInfo, nullptr, &m_test.transferFence);
 
     // geometry
     initTestGeometry(1);
@@ -241,7 +245,7 @@ public:
 
         std::vector<VkWriteDescriptorSet> descrWrites;
         VkDescriptorBufferInfo            viewInfo = {m_test.viewUbo.buffer, 0, sizeof(glsl::ViewData)};
-        descrWrites.push_back(m_test.container.getWrite(0, DSET_SCENE_UBO_VIEW, &viewInfo));
+        descrWrites.push_back(m_test.container.makeWrite(0, DSET_SCENE_UBO_VIEW, &viewInfo));
 
         vkUpdateDescriptorSets(m_device, uint32_t(descrWrites.size()), descrWrites.data(), 0, nullptr);
       }
@@ -284,30 +288,33 @@ public:
 
       AsyncTransferJob& job = m_test.transfer;
 
-      // create semaphore to signal drawing to only start if upload completed
-      VkSemaphoreCreateInfo semInfo = nvvk::make<VkSemaphoreCreateInfo>();
-      vkCreateSemaphore(m_device, &semInfo, nullptr, &job.semaphore);
+      // assign semaphore to signal drawing to only start if upload completed
+      job.semaphore = m_test.transferSemaphore;
 
-      // create fence to signal host to recycle memory later
-      VkFenceCreateInfo fenceInfo = nvvk::make<VkFenceCreateInfo>();
-      vkCreateFence(m_device, &fenceInfo, nullptr, &job.fence);
+      // assign fence to signal host to recycle memory later
+      job.fence = m_test.transferFence;
+      vkResetFences(m_device, 1, &job.fence);
+
+      // We only have one transfer job here, so we use the same fence/semaphore
+      // normally you would need some pooling system. Or purely base everything
+      // upon submission ticks/frame counters etc.
 
       // keep record in which frame we got triggered
-      job.frameSignal = m_ringFences.getCurrentFrame();
+      job.frameSignal = m_frame;
 
       // get command buffer for staging operations
-      job.cmd = m_test.transferCmdPool.createAndBegin();
+      job.cmd = m_test.transferCmdPool.createCommandBuffer();
       {
         auto timeOnce = m_profilerVK.timeSingle("Upload", job.cmd, true);
-        m_test.geoVbo = m_test.allocatorDma.createBuffer(job.cmd, vboSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vboData);
-        m_test.geoIbo = m_test.allocatorDma.createBuffer(job.cmd, iboSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, iboData);
+        m_test.geoVbo = m_test.allocatorDma.createBuffer(job.cmd, vboSize, vboData, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        m_test.geoIbo = m_test.allocatorDma.createBuffer(job.cmd, iboSize, iboData, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
       }
-
 
       vkEndCommandBuffer(job.cmd);
 
       // finalize the staging job for later cleanup of resources
-      job.stagingID = m_test.allocatorDma.finalizeStaging();
+      // associates all current staging resources with the fence
+      m_test.allocatorDma.finalizeStaging(job.fence);
 
       // submit staged transfers
       VkSubmitInfo submitInfo = nvvk::makeSubmitInfo(1, &job.cmd, 1, &job.semaphore);
@@ -321,10 +328,10 @@ public:
       // scope class usage on regular graphics queue
       // WARNING this is blocking the device, slow
 
-      nvvk::ScopeStagingMemoryManager staging(m_device, m_physicalDevice);
+      nvvk::StagingMemoryManager staging(m_device, m_physicalDevice);
       {
-        nvvk::ScopeSubmitCmdBuffer cmd(m_device, m_queue, m_queueFamily);
-        auto                       timeOnce = m_profilerVK.timeSingle("Upload", cmd);
+        nvvk::ScopeCommandBuffer cmd(m_device, m_queueFamily, m_queue);
+        auto                     timeOnce = m_profilerVK.timeSingle("Upload", cmd);
 
         // showcases individual subsystem usage, not using AllocatorDMA
         m_test.geoVbo.buffer = m_memAllocator.createBuffer(vboSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_test.geoVbo.allocation);
@@ -332,7 +339,9 @@ public:
 
         staging.cmdToBuffer(cmd, m_test.geoVbo.buffer, 0, vboSize, vboData);
         staging.cmdToBuffer(cmd, m_test.geoIbo.buffer, 0, iboSize, iboData);
-        // no need to "finalize" since we release all intermediate resources at stagingTransfer destructor anyway
+
+        // no need to "finalize or release" for staging
+        // since we release all intermediate resources at staging destructor anyway
       }
     }
   }
@@ -345,23 +354,29 @@ public:
       m_test.pipeline = VK_NULL_HANDLE;
     }
 
-    nvvk::GraphicsPipelineState gfxState;
-    gfxState.setPipelineLayout(m_test.container.getPipeLayout());
-    gfxState.setRenderPass(m_frameBuffer.m_passScene);
-    gfxState.setDepthTest(true, true, VK_COMPARE_OP_LESS_OR_EQUAL);
-    gfxState.setCullMode(VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-    gfxState.setPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-    gfxState.addVertexInputAttribute(VERTEX_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position));
-    gfxState.addVertexInputAttribute(VERTEX_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal));
-    gfxState.addVertexInputAttribute(VERTEX_TEX, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texcoord));
-    gfxState.addVertexInputBinding(0, sizeof(Vertex));
-    gfxState.addShaderStage(VK_SHADER_STAGE_VERTEX_BIT, m_shaderManager.get(m_test.moduleVS));
-    gfxState.addShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, m_shaderManager.get(m_test.moduleFS));
-    gfxState.addDynamicState(VK_DYNAMIC_STATE_VIEWPORT);
-    gfxState.addDynamicState(VK_DYNAMIC_STATE_SCISSOR);
+    nvvk::GraphicsPipelineState     gfxState;
+    nvvk::GraphicsPipelineGenerator gfxGen(m_device, m_test.container.getPipeLayout(), m_frameBuffer.m_passScene, gfxState);
+    gfxState.depthStencilState.depthTestEnable  = true;
+    gfxState.depthStencilState.depthWriteEnable = true;
+    gfxState.depthStencilState.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
 
-    VkResult res = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &gfxState.createInfo, nullptr, &m_test.pipeline);
-    assert(res == VK_SUCCESS);
+    gfxState.rasterizationState.cullMode  = VK_CULL_MODE_BACK_BIT;
+    gfxState.rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    gfxState.inputAssemblyState.topology  = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    gfxState.addAttributeDescription(nvvk::GraphicsPipelineState::makeVertexInputAttribute(VERTEX_POS, 0, VK_FORMAT_R32G32B32_SFLOAT,
+                                                                                           offsetof(Vertex, position)));
+    gfxState.addAttributeDescription(nvvk::GraphicsPipelineState::makeVertexInputAttribute(VERTEX_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT,
+                                                                                           offsetof(Vertex, normal)));
+    gfxState.addAttributeDescription(nvvk::GraphicsPipelineState::makeVertexInputAttribute(VERTEX_TEX, 0, VK_FORMAT_R32G32_SFLOAT,
+                                                                                           offsetof(Vertex, texcoord)));
+    gfxState.addBindingDescription(nvvk::GraphicsPipelineState::makeVertexInputBinding(0, sizeof(Vertex)));
+    gfxGen.addShader(m_shaderManager.get(m_test.moduleVS), VK_SHADER_STAGE_VERTEX_BIT);
+    gfxGen.addShader(m_shaderManager.get(m_test.moduleFS), VK_SHADER_STAGE_FRAGMENT_BIT);
+    gfxState.addDynamicStateEnable(VK_DYNAMIC_STATE_VIEWPORT);
+    gfxState.addDynamicStateEnable(VK_DYNAMIC_STATE_SCISSOR);
+
+    m_test.pipeline = gfxGen.createPipeline();
+    assert(m_test.pipeline != VK_NULL_HANDLE);
   }
 
   void deinitTest()
@@ -372,28 +387,20 @@ public:
 
     vkDestroyPipeline(m_device, m_test.pipeline, nullptr);
 
-    if(m_test.transfer.fence)
-    {
-      vkDestroyFence(m_device, m_test.transfer.fence, nullptr);
-    }
-    if(m_test.transfer.semaphore)
-    {
-      vkDestroySemaphore(m_device, m_test.transfer.semaphore, nullptr);
-    }
     if(m_test.transfer.cmd)
     {
       m_test.transferCmdPool.destroy(m_test.transfer.cmd);
-    }
-    if(m_test.transfer.stagingID)
-    {
-      m_test.staging.release(m_test.transfer.stagingID);
+      m_test.transfer.cmd = nullptr;
     }
 
     deleteAsyncJobResources(m_test.transfer);
 
     m_test.transferCmdPool.deinit();
     m_test.container.deinit();
-    m_test.staging.deinit();
+    m_test.allocatorDma.deinit();
+
+    vkDestroyFence(m_device, m_test.transferFence, nullptr);
+    vkDestroySemaphore(m_device, m_test.transferSemaphore, nullptr);
   }
 
   //////////////////////////////////////////////////////////////////////////
@@ -492,7 +499,7 @@ public:
   {
     m_frameBuffer.updateResources(width, height);
     {
-      nvvk::ScopeSubmitCmdBuffer cmd(m_device, m_queue, m_queueFamily);
+      nvvk::ScopeCommandBuffer cmd(m_device, m_queueFamily, m_queue);
       m_frameBuffer.cmdUpdateBarriers(cmd);
     }
   }
@@ -520,27 +527,23 @@ public:
 
   void tryCleanupAsyncJob(AsyncTransferJob& job)
   {
-    // check if fence was triggered, that means the copy has completed
+    // staging will directly test the fence we gave it for this transfer job
+    // and release resources
+    m_test.allocatorDma.releaseStaging();
+
+    // we also check if fence was triggered, that means the copy has completed
     if(job.fence && vkGetFenceStatus(m_device, job.fence) == VK_SUCCESS)
     {
-      // give memory back for future staging operations
-      m_test.staging.release(job.stagingID);
-      job.stagingID = nvvk::StagingID();
-
       // free used cmdbuffer
       m_test.transferCmdPool.destroy(job.cmd);
-      job.cmd = VK_NULL_HANDLE;
-
-      // destroy the fence (or recycle etc.)
-      vkDestroyFence(m_device, job.fence, nullptr);
+      job.cmd   = VK_NULL_HANDLE;
       job.fence = VK_NULL_HANDLE;
     }
-    // wait if the frame that was waiting for the transfer
-    // has completed (the fence here only tells us the copy operation has completed,
+    // wait a few frames until we know that the frame waiting for the semaphore
+    // has completed (the fence above only tells us the copy operation has completed,
     // not whether the queue waiting for this copy had progressed)
-    if(job.semaphore && m_ringFences.hasFrameCompleted(job.frameSignal))
+    if(job.semaphore && m_frame > job.frameSignal + nvvk::DEFAULT_RING_SIZE)
     {
-      vkDestroySemaphore(m_device, job.semaphore, nullptr);
       job.semaphore = VK_NULL_HANDLE;
 
       // delete unused resources
@@ -558,7 +561,7 @@ public:
     // dynamically recreate geometry to showcase async behaviour
     // the overall frametime will be faster with async true
 
-    uint32_t recreateCycle = nvvk::MAX_RING_FRAMES + 2;
+    uint32_t recreateCycle = nvvk::DEFAULT_RING_SIZE + 2;
     if(m_test.useRegeneration && m_frame && m_frame % recreateCycle == 0)
     {
 
@@ -581,17 +584,14 @@ public:
     // The longer our cycle count, the more latency we potentially introduce.
     // if the host is much faster at processing frames than the device.
 
-    m_ringFences.wait();
-    m_ringCmdPool.setFrame(m_ringFences.getCurrentFrame(), m_ringFences.getCompletedFrame());
+    m_ringFences.setCycleAndWait(m_frame);
+    m_ringCmdPool.setCycle(m_frame);
 
     // Pick up a new command buffer every frame and
     // record our principle operations
 
-    VkCommandBuffer          cmd = m_ringCmdPool.createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    VkCommandBuffer cmd =
+        m_ringCmdPool.createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
     {
       // draw test
       {
@@ -625,7 +625,7 @@ public:
     }
 
     m_submission.enqueue(cmd);
-    m_submission.execute(m_ringFences.advanceFrame());
+    m_submission.execute(m_ringFences.getFence());
     m_profilerVK.endFrame();
 
     if(m_test.useAsync)
@@ -646,7 +646,7 @@ public:
       float        util;
       util = m_memAllocator.getUtilization(allocSize, usedSize);
       printf("Memory:  %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
-      util = m_test.staging.getUtilization(allocSize, usedSize);
+      util = m_test.allocatorDma.getStaging()->getUtilization(allocSize, usedSize);
       printf("Staging: %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
     }
 
@@ -757,7 +757,7 @@ public:
       createInfo.hinstance                   = hInstance;
       createInfo.hwnd                        = hWnd;
       result                                 = vkCreateWin32SurfaceKHR(m_instance, &createInfo, nullptr, &m_surface);
-#else  // _WIN32
+#else   // _WIN32
       result = glfwCreateWindowSurface(m_instance, m_internal, NULL, &m_surface);
 #endif  // _WIN32
       assert(result == VK_SUCCESS);
@@ -779,7 +779,7 @@ public:
 
   void submitUpdateBarriers()
   {
-    nvvk::ScopeSubmitCmdBuffer cmd(m_device, m_queue, m_queueFamily);
+    nvvk::ScopeCommandBuffer cmd(m_device, m_queueFamily, m_queue);
     m_swapChain.cmdUpdateBarriers(cmd);
   }
 
@@ -856,6 +856,9 @@ int main(int argc, const char** argv)
 #endif
     contextInfo.addDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME, false);
 
+    // we make use of this extension when measuring time on the transfer queue
+    VkPhysicalDeviceHostQueryResetFeaturesEXT hostResetFeatures = nvvk::make<VkPhysicalDeviceHostQueryResetFeaturesEXT>();
+    contextInfo.addDeviceExtension(VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME, false, &hostResetFeatures);
 
     // fake optional extension for illustration
     VkPhysicalDeviceMeshShaderFeaturesNV          meshFeatures = nvvk::make<VkPhysicalDeviceMeshShaderFeaturesNV>();
@@ -886,6 +889,13 @@ int main(int argc, const char** argv)
   // main event loop
   while(window.pollEvents())
   {
+    // don't attempt to render when minimized
+    if(!window.isOpen())
+    {
+      NVPSystem::waitEvents();
+      continue;
+    }
+
     if(!window.m_swapChain.acquire())
     {
       exit(-1);
