@@ -163,7 +163,7 @@ public:
     m_shaderManager.addDirectory(NVPSystem::exePath() + std::string(PROJECT_RELDIRECTORY));
 
     m_profilerVK.init(m_device, m_physicalDevice);
-    m_profilerVK.setMarkerUsage(context.hasDeviceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
+    m_profilerVK.setLabelUsage(context.hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
 
     // primary memory allocator used
     // in this simple case we use small chunks, however for real-world we recommend larger sizes
