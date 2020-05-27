@@ -813,7 +813,7 @@ public:
 
   void onMouseWheel(int delta) override { ImGuiH::mouse_wheel(delta); }
 
-  void onKeyboardChar(unsigned char key, int mods, int x, int y) { ImGuiH::key_char(key); }
+  void onKeyboardChar(unsigned char key, int mods, int x, int y) override { ImGuiH::key_char(key); }
 
   void onKeyboard(KeyCode key, ButtonAction action, int mods, int x, int y) override
   {
