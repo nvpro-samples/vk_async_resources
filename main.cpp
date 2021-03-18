@@ -50,12 +50,12 @@
 #include <nvmath/nvmath.h>
 #include <nvmath/nvmath_glsltypes.h>
 
-#include <imgui/imgui_helper.h>
-#include <imgui/imgui_impl_vk.h>
+#include <imgui/extras/imgui_helper.h>
 
 #include "framebuffer.hpp"
 
 #include "common.h"
+#include "imgui/backends/imgui_impl_vulkan.h"
 
 /*
   # vk_async_resources
@@ -372,8 +372,6 @@ public:
     gfxState.addBindingDescription(nvvk::GraphicsPipelineState::makeVertexInputBinding(0, sizeof(Vertex)));
     gfxGen.addShader(m_shaderManager.get(m_test.moduleVS), VK_SHADER_STAGE_VERTEX_BIT);
     gfxGen.addShader(m_shaderManager.get(m_test.moduleFS), VK_SHADER_STAGE_FRAGMENT_BIT);
-    gfxState.addDynamicStateEnable(VK_DYNAMIC_STATE_VIEWPORT);
-    gfxState.addDynamicStateEnable(VK_DYNAMIC_STATE_SCISSOR);
 
     m_test.pipeline = gfxGen.createPipeline();
     assert(m_test.pipeline != VK_NULL_HANDLE);
@@ -471,7 +469,7 @@ public:
     vkCmdEndRenderPass(cmd);
   }
 
-  void drawUI(VkCommandBuffer cmd, const ImDrawData* imguiDrawData)
+  void drawUI(VkCommandBuffer cmd, ImDrawData* imguiDrawData)
   {
     VkRenderPassBeginInfo renderPassBeginInfo    = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     renderPassBeginInfo.renderPass               = m_frameBuffer.m_passUI;
@@ -488,7 +486,7 @@ public:
     vkCmdSetViewport(cmd, 0, 1, &m_frameBuffer.m_viewport);
     vkCmdSetScissor(cmd, 0, 1, &m_frameBuffer.m_scissor);
 
-    ImGui::RenderDrawDataVK(cmd, imguiDrawData);
+    ImGui_ImplVulkan_RenderDrawData(imguiDrawData, cmd);
 
     vkCmdEndRenderPass(cmd);
   }
@@ -706,7 +704,8 @@ public:
 
 // only required due to custom window initialization
 // normally we hide this in the various "app*" utility classes
-
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 #ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
@@ -796,12 +795,12 @@ public:
       return;
 
     vkQueueWaitIdle(m_queue);
-    m_swapChain.update(width, height, false);
+    VkExtent2D swapExtent = m_swapChain.update(width, height, false);
 
     // window resize is pretty heavy, let's not care about blocking operations here
     submitUpdateBarriers();
 
-    m_sample.updateFrameBuffer(width, height);
+    m_sample.updateFrameBuffer(swapExtent.width, swapExtent.height);
   }
 
   void onMouseButton(MouseButton button, ButtonAction action, int mods, int x, int y) override
@@ -833,7 +832,7 @@ public:
 // Main entry point
 int main(int argc, const char** argv)
 {
-  NVPSystem sys(argv[0], PROJECT_NAME);
+  NVPSystem sys(PROJECT_NAME);
 
   // for illustration purposes context and surface creation
   // are done in main, normally you would wrap this in an app* class
@@ -881,7 +880,7 @@ int main(int argc, const char** argv)
   {
     return -1;
   }
-  if(!sample.init(context, window.getWidth(), window.getHeight()))
+  if(!sample.init(context, window.m_swapChain.getWidth(), window.m_swapChain.getHeight()))
   {
     return -1;
   }
