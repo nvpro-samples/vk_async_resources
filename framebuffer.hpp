@@ -1,29 +1,22 @@
-/* Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+/*
+ * Copyright (c) 2019-2021, NVIDIA CORPORATION.  All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *  * Neither the name of NVIDIA CORPORATION nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
- * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
- * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2021 NVIDIA CORPORATION
+ * SPDX-License-Identifier: Apache-2.0
  */
+
 
 #pragma once
 
@@ -36,7 +29,7 @@
 class FrameBuffer
 {
 public:
-  nvvk::DeviceMemoryAllocator* m_memAllocator = nullptr;
+  nvvk::ResourceAllocator* m_memAllocator = nullptr;
 
   int      m_renderWidth  = 0;
   int      m_renderHeight = 0;
@@ -55,16 +48,13 @@ public:
   VkRenderPass  m_passUI = VK_NULL_HANDLE;
   VkFramebuffer m_fboUI  = VK_NULL_HANDLE;
 
-  VkImage m_imgColor        = VK_NULL_HANDLE;
-  VkImage m_imgDepthStencil = VK_NULL_HANDLE;
-
-  nvvk::AllocationID m_imgColorAID;
-  nvvk::AllocationID m_imgDepthStencilAID;
+  nvvk::Image m_imgColor;
+  nvvk::Image m_imgDepthStencil;
 
   VkImageView m_viewColor        = VK_NULL_HANDLE;
   VkImageView m_viewDepthStencil = VK_NULL_HANDLE;
 
-  void init(nvvk::DeviceMemoryAllocator& memAllocator, VkFormat colorFormat)
+  void init(nvvk::ResourceAllocator& memAllocator, VkFormat colorFormat)
   {
     VkResult result;
 
@@ -163,7 +153,7 @@ public:
     m_renderWidth  = width;
     m_renderHeight = height;
 
-    if(m_imgColor != 0)
+    if(m_imgColor.image != 0)
     {
       deinitResources();
     }
@@ -186,7 +176,7 @@ public:
       cbImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
       // always enforce device local bit for framebuffer images!
-      m_imgColor = m_memAllocator->createImage(cbImageInfo, m_imgColorAID, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      m_imgColor = m_memAllocator->createImage(cbImageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
       VkImageCreateInfo dsImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
       dsImageInfo.imageType         = VK_IMAGE_TYPE_2D;
@@ -203,7 +193,7 @@ public:
       dsImageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
 
       // always enforce device local bit for framebuffer images!
-      m_imgDepthStencil = m_memAllocator->createImage(dsImageInfo, m_imgDepthStencilAID, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      m_imgDepthStencil = m_memAllocator->createImage(dsImageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
 
     {
@@ -221,7 +211,7 @@ public:
       cbImageViewInfo.subresourceRange.baseArrayLayer = 0;
       cbImageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
 
-      cbImageViewInfo.image = m_imgColor;
+      cbImageViewInfo.image = m_imgColor.image;
       result                = vkCreateImageView(device, &cbImageViewInfo, nullptr, &m_viewColor);
       NVVK_CHECK(result);
 
@@ -239,7 +229,7 @@ public:
       dsImageViewInfo.subresourceRange.baseArrayLayer = 0;
       dsImageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_STENCIL_BIT | VK_IMAGE_ASPECT_DEPTH_BIT;
 
-      dsImageViewInfo.image = m_imgDepthStencil;
+      dsImageViewInfo.image = m_imgDepthStencil.image;
       result                = vkCreateImageView(device, &dsImageViewInfo, nullptr, &m_viewDepthStencil);
       NVVK_CHECK(result);
     }
@@ -301,9 +291,9 @@ public:
                                    | nvvk::makeAccessMaskPipelineStageFlags(VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
     VkImageMemoryBarrier memBarriers[] = {
-        nvvk::makeImageMemoryBarrier(m_imgColor, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+        nvvk::makeImageMemoryBarrier(m_imgColor.image, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
-        nvvk::makeImageMemoryBarrier(m_imgDepthStencil, 0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        nvvk::makeImageMemoryBarrier(m_imgDepthStencil.image, 0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                                      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT),
     };
@@ -329,7 +319,7 @@ public:
                                    | nvvk::makeAccessMaskPipelineStageFlags(VK_ACCESS_TRANSFER_WRITE_BIT);
 
     VkImageMemoryBarrier memBarriers[] = {
-        nvvk::makeImageMemoryBarrier(m_imgColor, 0, VK_ACCESS_TRANSFER_READ_BIT,
+        nvvk::makeImageMemoryBarrier(m_imgColor.image, 0, VK_ACCESS_TRANSFER_READ_BIT,
                                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
         nvvk::makeImageMemoryBarrier(swapChain.getActiveImage(), 0, VK_ACCESS_TRANSFER_WRITE_BIT,
                                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
@@ -351,7 +341,7 @@ public:
       region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
       region.srcSubresource.layerCount = 1;
 
-      vkCmdBlitImage(cmd, m_imgColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapChain.getActiveImage(),
+      vkCmdBlitImage(cmd, m_imgColor.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapChain.getActiveImage(),
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
     }
 
@@ -369,14 +359,11 @@ public:
     VkDevice device = m_memAllocator->getDevice();
 
     vkDestroyImageView(device, m_viewColor, nullptr);
-    vkDestroyImageView(device, m_viewDepthStencil, nullptr);
-    vkDestroyImage(device, m_imgColor, nullptr);
-    vkDestroyImage(device, m_imgDepthStencil, nullptr);
+    vkDestroyImageView(device, m_viewDepthStencil, nullptr);    
     vkDestroyFramebuffer(device, m_fboScene, nullptr);
     vkDestroyFramebuffer(device, m_fboUI, nullptr);
-
-    m_memAllocator->free(m_imgColorAID);
-    m_memAllocator->free(m_imgDepthStencilAID);
+    m_memAllocator->destroy(m_imgColor);
+    m_memAllocator->destroy(m_imgDepthStencil);
   }
 
   void deinit()

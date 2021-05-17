@@ -168,7 +168,4 @@ Host    : | submit |  ... prep Frame + 1 ...     | check F | try release | ..
 Make sure to have installed a recent [Vulkan-SDK](http://lunarg.com/vulkan-sdk/). 
 Always use 64-bit build configurations.
 
-Ideally clone this and other interesting [nvpro-samples](https://github.com/nvpro-samples)
-repositories into a common subdirectory. You will always need [shared_sources](https://github.com/nvpro-samples/shared_sources)
-and on Windows [shared_external](https://github.com/nvpro-samples/shared_external).
-The shared directories are searched either as subdirectory of the sample or one directory up.
+Ideally, clone this and other interesting [nvpro-samples](https://github.com/nvpro-samples) repositories into a common subdirectory. You will always need [nvpro_core](https://github.com/nvpro-samples/nvpro_core). The nvpro_core is searched either as a subdirectory of the sample, or one directory up.

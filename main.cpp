@@ -1,29 +1,22 @@
-/* Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+/*
+ * Copyright (c) 2019-2021, NVIDIA CORPORATION.  All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *  * Neither the name of NVIDIA CORPORATION nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
- * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
- * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2021 NVIDIA CORPORATION
+ * SPDX-License-Identifier: Apache-2.0
  */
+
 
 #include <algorithm>
 #include <random>
@@ -34,7 +27,8 @@
 #include <nvh/geometry.hpp>
 #include <nvh/misc.hpp>
 
-#include <nvvk/allocator_dma_vk.hpp>
+#include <nvvk/resourceallocator_vk.hpp>
+#include <nvvk/memorymanagement_vk.hpp>
 
 #include <nvvk/buffers_vk.hpp>
 #include <nvvk/commands_vk.hpp>
@@ -50,12 +44,12 @@
 #include <nvmath/nvmath.h>
 #include <nvmath/nvmath_glsltypes.h>
 
-#include <imgui/extras/imgui_helper.h>
+#include <imgui/imgui_helper.h>
 
 #include "framebuffer.hpp"
 
+#include "backends/imgui_vk_extra.h"
 #include "common.h"
-#include "imgui/backends/imgui_impl_vulkan.h"
 
 /*
   # vk_async_resources
@@ -90,7 +84,7 @@ public:
   nvvk::RingFences      m_ringFences;
   nvvk::RingCommandPool m_ringCmdPool;
 
-  nvvk::DeviceMemoryAllocator m_memAllocator;
+  nvvk::ResourceAllocatorDma  m_resAlloc;
 
   // the framebuffer class is not totally generic, but good for simple work
   // should create your own class for different samples as pass setups etc. will
@@ -109,7 +103,7 @@ public:
     VkSemaphore                  semaphore   = VK_NULL_HANDLE;
     VkFence                      fence       = VK_NULL_HANDLE;
     bool                         print       = true;
-    std::vector<nvvk::BufferDma> purgeableResources;
+    std::vector<nvvk::Buffer>    purgeableResources;
   };
 
   struct Test
@@ -119,11 +113,11 @@ public:
     nvvk::ShaderModuleID         moduleVS;
     nvvk::ShaderModuleID         moduleFS;
 
-    nvvk::BufferDma viewUbo;
-    nvvk::BufferDma geoVbo;
-    nvvk::BufferDma geoIbo;
+    nvvk::Buffer viewUbo;
+    nvvk::Buffer geoVbo;
+    nvvk::Buffer geoIbo;
 
-    nvvk::AllocatorDma allocatorDma;
+    nvvk::ResourceAllocator* allocator;
 
     std::vector<VkDrawIndexedIndirectCommand> drawCmds;
 
@@ -167,9 +161,9 @@ public:
 
     // primary memory allocator used
     // in this simple case we use small chunks, however for real-world we recommend larger sizes
-
-    m_memAllocator.init(m_device, m_physicalDevice, 16 * 1024 * 1024);
-    m_frameBuffer.init(m_memAllocator, VK_FORMAT_R8G8B8A8_UNORM);
+    VkDeviceSize blockSize = 16 * 1024 * 1024;
+    m_resAlloc.init(m_device, m_physicalDevice, blockSize, blockSize);
+    m_frameBuffer.init(m_resAlloc, VK_FORMAT_R8G8B8A8_UNORM);
     updateFrameBuffer(width, height);
 
 
@@ -190,7 +184,7 @@ public:
     ImGui::ShutdownVK();
 
     m_frameBuffer.deinit();
-    m_memAllocator.deinit();
+    m_resAlloc.deinit();
     m_ringFences.deinit();
     m_ringCmdPool.deinit();
 
@@ -205,12 +199,11 @@ public:
   bool initTest()
   {
     // internal subsystems
+    m_test.allocator = &m_resAlloc;
 
-    // simplified allocator wrapper
-    m_test.allocatorDma.init(m_device, m_physicalDevice, &m_memAllocator, 16 * 1024 * 1024);
     // in this particular sample we want to keep staging memory around,
     // as we keep re-using it
-    m_test.allocatorDma.getStaging()->setFreeUnusedOnRelease(false);
+    m_test.allocator->getStaging()->setFreeUnusedOnRelease(false);
 
     // command pool for async transfers
     m_test.transferCmdPool.init(m_device, m_queueTransferFamily);
@@ -225,7 +218,7 @@ public:
     initTestGeometry(1);
 
     // scene descriptors
-    m_test.viewUbo = m_test.allocatorDma.createBuffer(sizeof(glsl::ViewData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    m_test.viewUbo = m_test.allocator->createBuffer(sizeof(glsl::ViewData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 
     {
       {
@@ -306,15 +299,15 @@ public:
       job.cmd = m_test.transferCmdPool.createCommandBuffer();
       {
         auto timeOnce = m_profilerVK.timeSingle("Upload", job.cmd, true);
-        m_test.geoVbo = m_test.allocatorDma.createBuffer(job.cmd, vboSize, vboData, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        m_test.geoIbo = m_test.allocatorDma.createBuffer(job.cmd, iboSize, iboData, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        m_test.geoVbo = m_test.allocator->createBuffer(job.cmd, vboSize, vboData, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        m_test.geoIbo = m_test.allocator->createBuffer(job.cmd, iboSize, iboData, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
       }
 
       vkEndCommandBuffer(job.cmd);
 
       // finalize the staging job for later cleanup of resources
       // associates all current staging resources with the fence
-      m_test.allocatorDma.finalizeStaging(job.fence);
+      m_test.allocator->finalizeStaging(job.fence);
 
       // submit staged transfers
       VkSubmitInfo submitInfo = nvvk::makeSubmitInfo(1, &job.cmd, 1, &job.semaphore);
@@ -327,21 +320,18 @@ public:
     {
       // scope class usage on regular graphics queue
       // WARNING this is blocking the device, slow
-
-      nvvk::StagingMemoryManager staging(m_device, m_physicalDevice);
       {
         nvvk::ScopeCommandBuffer cmd(m_device, m_queueFamily, m_queue);
         auto                     timeOnce = m_profilerVK.timeSingle("Upload", cmd);
 
         // showcases individual subsystem usage, not using AllocatorDMA
-        m_test.geoVbo.buffer = m_memAllocator.createBuffer(vboSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_test.geoVbo.allocation);
-        m_test.geoIbo.buffer = m_memAllocator.createBuffer(iboSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m_test.geoIbo.allocation);
+        m_test.geoVbo = m_resAlloc.createBuffer(vboSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        m_test.geoIbo = m_resAlloc.createBuffer(iboSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
-        staging.cmdToBuffer(cmd, m_test.geoVbo.buffer, 0, vboSize, vboData);
-        staging.cmdToBuffer(cmd, m_test.geoIbo.buffer, 0, iboSize, iboData);
+        m_resAlloc.getStaging()->cmdToBuffer(cmd, m_test.geoVbo.buffer, 0, vboSize, vboData);
+        m_resAlloc.getStaging()->cmdToBuffer(cmd, m_test.geoIbo.buffer, 0, iboSize, iboData);
 
-        // no need to "finalize or release" for staging
-        // since we release all intermediate resources at staging destructor anyway
+        m_resAlloc.finalizeAndReleaseStaging();
       }
     }
   }
@@ -379,9 +369,10 @@ public:
 
   void deinitTest()
   {
-    m_test.allocatorDma.destroy(m_test.viewUbo);
-    m_test.allocatorDma.destroy(m_test.geoVbo);
-    m_test.allocatorDma.destroy(m_test.geoIbo);
+    m_test.allocator->destroy(m_test.viewUbo);
+    m_test.allocator->destroy(m_test.geoVbo);
+    m_test.allocator->destroy(m_test.geoIbo);
+    m_test.allocator->destroy(m_test.viewUbo);
 
     vkDestroyPipeline(m_device, m_test.pipeline, nullptr);
 
@@ -395,7 +386,6 @@ public:
 
     m_test.transferCmdPool.deinit();
     m_test.container.deinit();
-    m_test.allocatorDma.deinit();
 
     vkDestroyFence(m_device, m_test.transferFence, nullptr);
     vkDestroySemaphore(m_device, m_test.transferSemaphore, nullptr);
@@ -518,7 +508,7 @@ public:
   {
     for(auto& itbuffer : job.purgeableResources)
     {
-      m_test.allocatorDma.destroy(itbuffer);
+      m_test.allocator->destroy(itbuffer);
     }
     job.purgeableResources.clear();
   }
@@ -527,7 +517,7 @@ public:
   {
     // staging will directly test the fence we gave it for this transfer job
     // and release resources
-    m_test.allocatorDma.releaseStaging();
+    m_test.allocator->releaseStaging();
 
     // we also check if fence was triggered, that means the copy has completed
     if(job.fence && vkGetFenceStatus(m_device, job.fence) == VK_SUCCESS)
@@ -642,9 +632,9 @@ public:
       VkDeviceSize allocSize;
       VkDeviceSize usedSize;
       float        util;
-      util = m_memAllocator.getUtilization(allocSize, usedSize);
-      printf("Memory:  %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
-      util = m_test.allocatorDma.getStaging()->getUtilization(allocSize, usedSize);
+//       util = m_resAlloc.getUtilization(allocSize, usedSize);
+//       printf("Memory:  %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
+      util = m_test.allocator->getStaging()->getUtilization(allocSize, usedSize);
       printf("Staging: %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
     }
 
@@ -673,10 +663,10 @@ public:
     m_uiTime = time;
 
     ImGui::SetNextWindowPos(ImVec2(5, 5));
-    ImGui::SetNextWindowSize(ImVec2(280, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImGuiH::dpiScaled(280, 0), ImGuiCond_FirstUseEver);
     if(ImGui::Begin("NVIDIA " PROJECT_NAME, nullptr))
     {
-      ImGui::PushItemWidth(120);
+      ImGui::PushItemWidth(ImGuiH::dpiScaled(120));
       ImGui::Checkbox("use async transfer", &m_test.useAsync);
       ImGui::Checkbox("dynamic scene generation ", &m_test.useRegeneration);
       ImGui::Text("    (flickers a bit)");
@@ -690,8 +680,8 @@ public:
 
         VkDeviceSize allocSize;
         VkDeviceSize usedSize;
-        float        util;
-        util = m_memAllocator.getUtilization(allocSize, usedSize);
+        float        util = 0.0f;
+        util = m_resAlloc.getDMA()->getUtilization(allocSize, usedSize);
         ImGui::Text("Total Memory [KB]: %6d", uint32_t(allocSize / 1024));
         ImGui::ProgressBar(util, ImVec2(0.0f, 0.0f));
       }
