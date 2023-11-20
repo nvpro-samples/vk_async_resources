@@ -32,7 +32,7 @@
 
 #ifdef __cplusplus
 namespace glsl {
-  using namespace nvmath;
+  using namespace glm;
 #endif
 
 struct ViewData {

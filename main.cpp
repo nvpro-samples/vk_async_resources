@@ -41,14 +41,15 @@
 #include <nvvk/structs_vk.hpp>
 #include <nvvk/swapchain_vk.hpp>
 
-#include <nvmath/nvmath.h>
-#include <nvmath/nvmath_glsltypes.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/matrix_access.hpp>
 
 #include <imgui/imgui_helper.h>
 
 #include "framebuffer.hpp"
 
-#include "backends/imgui_vk_extra.h"
+#include "imgui/backends/imgui_vk_extra.h"
 #include "common.h"
 
 /*
@@ -84,7 +85,7 @@ public:
   nvvk::RingFences      m_ringFences;
   nvvk::RingCommandPool m_ringCmdPool;
 
-  nvvk::ResourceAllocatorDma  m_resAlloc;
+  nvvk::ResourceAllocatorDma m_resAlloc;
 
   // the framebuffer class is not totally generic, but good for simple work
   // should create your own class for different samples as pass setups etc. will
@@ -98,12 +99,12 @@ public:
 
   struct AsyncTransferJob
   {
-    VkCommandBuffer              cmd         = VK_NULL_HANDLE;
-    uint32_t                     frameSignal = 0;
-    VkSemaphore                  semaphore   = VK_NULL_HANDLE;
-    VkFence                      fence       = VK_NULL_HANDLE;
-    bool                         print       = true;
-    std::vector<nvvk::Buffer>    purgeableResources;
+    VkCommandBuffer           cmd         = VK_NULL_HANDLE;
+    uint32_t                  frameSignal = 0;
+    VkSemaphore               semaphore   = VK_NULL_HANDLE;
+    VkFence                   fence       = VK_NULL_HANDLE;
+    bool                      print       = true;
+    std::vector<nvvk::Buffer> purgeableResources;
   };
 
   struct Test
@@ -218,7 +219,8 @@ public:
     initTestGeometry(1);
 
     // scene descriptors
-    m_test.viewUbo = m_test.allocator->createBuffer(sizeof(glsl::ViewData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    m_test.viewUbo = m_test.allocator->createBuffer(sizeof(glsl::ViewData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                                                                                | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 
     {
       {
@@ -344,7 +346,7 @@ public:
       m_test.pipeline = VK_NULL_HANDLE;
     }
 
-    nvvk::GraphicsPipelineState     gfxState;
+    nvvk::GraphicsPipelineState gfxState;
     nvvk::GraphicsPipelineGenerator gfxGen(m_device, m_test.container.getPipeLayout(), m_frameBuffer.m_passScene, gfxState);
     gfxState.depthStencilState.depthTestEnable  = true;
     gfxState.depthStencilState.depthWriteEnable = true;
@@ -398,21 +400,22 @@ public:
 
     {
       glsl::ViewData viewData = {};
-      viewData.viewport       = nvmath::ivec2(m_frameBuffer.m_renderWidth, m_frameBuffer.m_renderHeight);
-      viewData.viewportf      = nvmath::vec2(m_frameBuffer.m_renderWidth, m_frameBuffer.m_renderHeight);
+      viewData.viewport       = glm::ivec2(m_frameBuffer.m_renderWidth, m_frameBuffer.m_renderHeight);
+      viewData.viewportf      = glm::vec2(m_frameBuffer.m_renderWidth, m_frameBuffer.m_renderHeight);
 
-      nvmath::mat4 projection =
-          nvmath::perspectiveVK(60.0f, float(m_frameBuffer.m_renderWidth) / float(m_frameBuffer.m_renderHeight), 0.000001f, 10.0f);
-      nvmath::mat4 view = nvmath::look_at(nvmath::vec3(0.0, 1.5, -1.5), nvmath::vec3(0.0, 0.0, 0.0), nvmath::vec3(0, 1, 0));
-      nvmath::mat4 viewI = nvmath::invert(view);
+      glm::mat4 projection = glm::perspectiveRH_ZO(
+          glm::radians(60.0f), float(m_frameBuffer.m_renderWidth) / float(m_frameBuffer.m_renderHeight), 0.000001f, 10.0f);
+      projection[1][1] *= -1;
+      glm::mat4 view  = glm::lookAt(glm::vec3(0.0, 1.5, -1.5), glm::vec3(0.0, 0.0, 0.0), glm::vec3(0, 1, 0));
+      glm::mat4 viewI = glm::inverse(view);
 
       viewData.viewProjMatrix  = projection * view;
-      viewData.viewProjMatrixI = nvmath::invert(viewData.viewProjMatrix);
+      viewData.viewProjMatrixI = glm::inverse(viewData.viewProjMatrix);
       viewData.viewMatrix      = view;
-      viewData.viewMatrixIT    = nvmath::transpose(viewI);
+      viewData.viewMatrixIT    = glm::transpose(viewI);
 
-      viewData.viewPos = viewData.viewMatrixIT.row(3);
-      viewData.viewDir = -view.row(2);
+      viewData.viewPos = glm::row(viewData.viewMatrixIT,3);
+      viewData.viewDir = -glm::row(view, 2);
 
       vkCmdUpdateBuffer(cmd, m_test.viewUbo.buffer, 0, sizeof(glsl::ViewData), &viewData);
     }
@@ -427,7 +430,7 @@ public:
       renderPassBeginInfo.renderArea.extent.height = m_frameBuffer.m_renderHeight;
       renderPassBeginInfo.clearValueCount          = 2;
 
-      nvmath::vec4f bgColor(0.2, 0.2, 0.2, 0.0);
+      glm::vec4 bgColor(0.2, 0.2, 0.2, 0.0);
 
       VkClearValue clearValues[2];
       clearValues[0].color.float32[0]     = bgColor.x;
@@ -632,8 +635,8 @@ public:
       VkDeviceSize allocSize;
       VkDeviceSize usedSize;
       float        util;
-//       util = m_resAlloc.getUtilization(allocSize, usedSize);
-//       printf("Memory:  %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
+      //       util = m_resAlloc.getUtilization(allocSize, usedSize);
+      //       printf("Memory:  %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
       util = m_test.allocator->getStaging()->getUtilization(allocSize, usedSize);
       printf("Staging: %7d / %7d KB\n", uint32_t(allocSize / 1024), uint32_t(usedSize / 1024));
     }
@@ -681,7 +684,7 @@ public:
         VkDeviceSize allocSize;
         VkDeviceSize usedSize;
         float        util = 0.0f;
-        util = m_resAlloc.getDMA()->getUtilization(allocSize, usedSize);
+        util              = m_resAlloc.getDMA()->getUtilization(allocSize, usedSize);
         ImGui::Text("Total Memory [KB]: %6d", uint32_t(allocSize / 1024));
         ImGui::ProgressBar(util, ImVec2(0.0f, 0.0f));
       }
@@ -850,7 +853,7 @@ int main(int argc, const char** argv)
     contextInfo.addDeviceExtension(VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME, false, &hostResetFeatures);
 
     // fake optional extension for illustration
-    VkPhysicalDeviceMeshShaderFeaturesNV          meshFeatures = nvvk::make<VkPhysicalDeviceMeshShaderFeaturesNV>();
+    VkPhysicalDeviceMeshShaderFeaturesNV meshFeatures = nvvk::make<VkPhysicalDeviceMeshShaderFeaturesNV>();
     VkPhysicalDeviceDescriptorIndexingFeaturesEXT indexingFeatures = nvvk::make<VkPhysicalDeviceDescriptorIndexingFeaturesEXT>();
     contextInfo.addDeviceExtension(VK_NV_MESH_SHADER_EXTENSION_NAME, true, &meshFeatures);
     contextInfo.addDeviceExtension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME, true, &indexingFeatures);
