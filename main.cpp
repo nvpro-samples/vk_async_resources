@@ -38,7 +38,6 @@
 #include <nvvk/pipeline_vk.hpp>
 #include <nvvk/profiler_vk.hpp>
 #include <nvvk/shadermodulemanager_vk.hpp>
-#include <nvvk/structs_vk.hpp>
 #include <nvvk/swapchain_vk.hpp>
 
 #include <glm/glm.hpp>
@@ -209,10 +208,10 @@ public:
     // command pool for async transfers
     m_test.transferCmdPool.init(m_device, m_queueTransferFamily);
 
-    VkSemaphoreCreateInfo semInfo = nvvk::make<VkSemaphoreCreateInfo>();
+    VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     vkCreateSemaphore(m_device, &semInfo, nullptr, &m_test.transferSemaphore);
 
-    VkFenceCreateInfo fenceInfo = nvvk::make<VkFenceCreateInfo>();
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     vkCreateFence(m_device, &fenceInfo, nullptr, &m_test.transferFence);
 
     // geometry
@@ -414,7 +413,7 @@ public:
       viewData.viewMatrix      = view;
       viewData.viewMatrixIT    = glm::transpose(viewI);
 
-      viewData.viewPos = glm::row(viewData.viewMatrixIT,3);
+      viewData.viewPos = glm::row(viewData.viewMatrixIT, 3);
       viewData.viewDir = -glm::row(view, 2);
 
       vkCmdUpdateBuffer(cmd, m_test.viewUbo.buffer, 0, sizeof(glsl::ViewData), &viewData);
@@ -835,7 +834,7 @@ int main(int argc, const char** argv)
     // create context
     nvvk::ContextCreateInfo contextInfo;
     contextInfo.apiMajor = 1;
-    contextInfo.apiMinor = 1;
+    contextInfo.apiMinor = 2;
     contextInfo.appTitle = PROJECT_NAME;
 
     // deal with surface extensions (normally you would hide this in an app* class)
@@ -848,15 +847,9 @@ int main(int argc, const char** argv)
 #endif
     contextInfo.addDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME, false);
 
-    // we make use of this extension when measuring time on the transfer queue
-    VkPhysicalDeviceHostQueryResetFeaturesEXT hostResetFeatures = nvvk::make<VkPhysicalDeviceHostQueryResetFeaturesEXT>();
-    contextInfo.addDeviceExtension(VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME, false, &hostResetFeatures);
-
     // fake optional extension for illustration
-    VkPhysicalDeviceMeshShaderFeaturesNV meshFeatures = nvvk::make<VkPhysicalDeviceMeshShaderFeaturesNV>();
-    VkPhysicalDeviceDescriptorIndexingFeaturesEXT indexingFeatures = nvvk::make<VkPhysicalDeviceDescriptorIndexingFeaturesEXT>();
+    VkPhysicalDeviceMeshShaderFeaturesNV meshFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
     contextInfo.addDeviceExtension(VK_NV_MESH_SHADER_EXTENSION_NAME, true, &meshFeatures);
-    contextInfo.addDeviceExtension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME, true, &indexingFeatures);
 
     if(!context.init(contextInfo))
     {
